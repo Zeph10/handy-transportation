@@ -53,7 +53,7 @@ otp_expiry = 3600
 
 [auth.email.template.magic_link]
 subject = "Your Handy Transportation login link"
-content_path = "./templates/magic_link.html"
+content_path = "./supabase/templates/magic_link.html"
 
 # Cloudflare Turnstile protects the login form from scripted abuse.
 # Enabled in production via the dashboard (Authentication → Attack Protection).
