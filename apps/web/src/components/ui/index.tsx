@@ -64,16 +64,19 @@ export function Field({ label, error, help, children, htmlFor, required }: {
   );
 }
 
+/** Drop the default full width when the caller sets its own width (w-*), so classes don't fight. */
+const fieldCls = (className?: string) => (className && /(^|\s)w-/.test(className) ? inputCls.replace('w-full ', '') : inputCls);
+
 export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement>>(function Input({ className, ...p }, ref) {
-  return <input ref={ref} className={cx(inputCls, 'h-11', className)} {...p} />;
+  return <input ref={ref} className={cx(fieldCls(className), 'h-11', className)} {...p} />;
 });
 
 export const Textarea = forwardRef<HTMLTextAreaElement, TextareaHTMLAttributes<HTMLTextAreaElement>>(function Textarea({ className, ...p }, ref) {
-  return <textarea ref={ref} className={cx(inputCls, 'min-h-20 py-2', className)} {...p} />;
+  return <textarea ref={ref} className={cx(fieldCls(className), 'min-h-20 py-2', className)} {...p} />;
 });
 
 export const Select = forwardRef<HTMLSelectElement, SelectHTMLAttributes<HTMLSelectElement>>(function Select({ className, ...p }, ref) {
-  return <select ref={ref} className={cx(inputCls, 'h-11', className)} {...p} />;
+  return <select ref={ref} className={cx(fieldCls(className), 'h-11', className)} {...p} />;
 });
 
 export function Checkbox({ label, checked, onChange, disabled, description }: {

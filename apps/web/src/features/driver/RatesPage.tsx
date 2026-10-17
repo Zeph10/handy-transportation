@@ -74,7 +74,7 @@ export function RatesPage() {
                     <p className="ml-8 text-xs text-[var(--muted)]">Congestion Pricing: +{formatUSD(settings.data.congestion_surcharge_cents)} when applicable, paid on top.</p>
                   )}
                 </div>
-                <label className="flex items-center gap-1 text-sm">
+                <label className="flex items-center gap-1 whitespace-nowrap text-sm">
                   Minimum $
                   <Input aria-label={`Minimum for ${d.name}`} inputMode="decimal" className="h-10 w-24" value={r.rate} disabled={!r.accepted}
                     onChange={(e) => setRows({ ...rows, [d.id]: { ...r, rate: e.target.value } })} />

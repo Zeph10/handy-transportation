@@ -18,6 +18,8 @@ import type { EditorTarget } from './BlockEditor';
 import { driverEvents } from './availabilityEvents';
 import { useDriverReference, useInvalidateSchedule, useSchedule, useTemplates } from './hooks';
 
+const to12h = (t: string) => { const [h, m] = t.split(':').map(Number); return `${((h + 11) % 12) + 1}:${String(m).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`; };
+
 export function DriverAvailabilityPage() {
   const driverId = useUserId();
   const { profile } = useSession();
@@ -66,7 +68,7 @@ export function DriverAvailabilityPage() {
 
   const noVehicle = !ref.loading && ref.vehicles.length === 0;
   const recentAdmin = (adminChanges.data ?? []).filter((c) => Date.now() - Date.parse(c.created_at) < 14 * 86_400_000);
-  const deadline = settings.data ? `${WEEKDAY_LONG[settings.data.submission_deadline_dow - 1]} ${settings.data.submission_deadline_time}` : null;
+  const deadline = settings.data ? `${WEEKDAY_LONG[settings.data.submission_deadline_dow - 1]} ${to12h(settings.data.submission_deadline_time)}` : null;
 
   return (
     <div>

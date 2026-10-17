@@ -4,14 +4,25 @@
   "version": "0.1.0",
   "description": "Driver availability and dispatch-assistance app for Handy Transportation",
   "type": "module",
-  "engines": { "node": ">=22.6" },
-  "workspaces": ["core", "apps/web"],
+  "engines": {
+    "node": ">=22.6"
+  },
+  "workspaces": [
+    "core",
+    "apps/web"
+  ],
   "scripts": {
     "test": "npm run test:core && npm run test:db",
     "test:core": "node --test core/test/*.test.ts apps/web/test/*.test.ts",
     "test:db": "bash supabase/tests/run.sh",
     "typecheck:core": "tsc -p core/tsconfig.json",
     "dev": "npm --workspace apps/web run dev",
-    "build": "npm --workspace apps/web run build"
+    "build": "npm --workspace apps/web run build",
+    "test:e2e": "bash e2e/start-stack.sh && node e2e/flows.mjs; code=$?; bash e2e/stop-stack.sh; exit $code"
+  },
+  "devDependencies": {
+    "pg": "^8.23.1",
+    "playwright": "^1.56.0",
+    "supabase": "^2.121.0"
   }
 }

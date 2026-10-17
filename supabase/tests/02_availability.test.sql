@@ -219,6 +219,16 @@ do $$ begin
   perform tests.eq((select status::text from public.driver_profiles where user_id = auth.uid()), 'APPROVED', 'status unchanged by profile edit');
 end $$;
 
+-- Usual destinations and minimums (audit snapshot is a list of rows)
+select public.save_destination_defaults(jsonb_build_array(
+  jsonb_build_object('destination_id', current_setting('t.jfk'), 'accepted', true, 'min_rate_cents', 22500),
+  jsonb_build_object('destination_id', current_setting('t.ewr'), 'accepted', false, 'min_rate_cents', 11000)));
+do $$ begin
+  perform tests.eq((select min_rate_cents from public.driver_destination_defaults where destination_id = current_setting('t.jfk')::uuid), 22500, 'JFK minimum saved');
+  perform tests.eq((select accepted from public.driver_destination_defaults where destination_id = current_setting('t.ewr')::uuid), false, 'EWR deselected');
+end $$;
+select tests.throws($$select public.save_destination_defaults(jsonb_build_array(jsonb_build_object('destination_id', current_setting('t.jfk'), 'min_rate_cents', -1)))$$, 'VALIDATION', 'negative default rejected');
+
 -- Criterion 3: data persists (visible to a fresh read in the same session)
 do $$ begin
   perform tests.ok((select count(*) from public.availability_blocks where deleted_at is null) >= 5, 'blocks persisted');

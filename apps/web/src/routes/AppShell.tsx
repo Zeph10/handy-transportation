@@ -104,12 +104,12 @@ export function AppShell() {
         <button type="button" className="grid size-10 place-items-center rounded-lg hover:bg-[var(--surface-2)] lg:hidden" aria-label="Open menu"
           aria-expanded={open} onClick={() => setOpen(!open)}>☰</button>
         <img src="/favicon.svg" alt="" className="size-7" />
-        <span className="font-semibold">Handy Transportation</span>
+        <span className="truncate font-semibold"><span className="sm:hidden">Handy</span><span className="hidden sm:inline">Handy Transportation</span></span>
         {inAdmin && <span className="hidden rounded bg-purple-100 px-2 py-0.5 text-xs font-medium text-purple-800 sm:inline dark:bg-purple-900/40 dark:text-purple-200">Dispatch</span>}
         <div className="ml-auto flex items-center gap-1">
           <span className="hidden max-w-48 truncate text-sm text-[var(--muted)] sm:inline">{profile?.full_name || profile?.email}</span>
           <ThemeToggle />
-          <Button variant="ghost" size="sm" onClick={() => void signOut()}>Log out</Button>
+          <Button variant="ghost" size="sm" className="whitespace-nowrap" onClick={() => void signOut()}>Log out</Button>
         </div>
       </header>
       <div className="flex flex-1">

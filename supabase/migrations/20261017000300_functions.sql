@@ -42,12 +42,18 @@ $$;
 
 -- Redact anything that looks like a credential before it reaches the audit log.
 create or replace function public._redact(p jsonb)
-returns jsonb language sql immutable set search_path = '' as $$
-  select case when p is null then null else (
-    select coalesce(jsonb_object_agg(k, case when k ~* '(token|secret|password|vault|code_verifier)' then '"[redacted]"'::jsonb else v end), '{}'::jsonb)
-    from jsonb_each(p) as e(k, v)
-  ) end;
-$$;
+returns jsonb language plpgsql immutable set search_path = '' as $$
+begin
+  if p is null then return null; end if;
+  if jsonb_typeof(p) = 'object' then
+    return (select coalesce(jsonb_object_agg(k, case when k ~* '(token|secret|password|vault|code_verifier)' then '"[redacted]"'::jsonb
+                                                     else public._redact(v) end), '{}'::jsonb)
+            from jsonb_each(p) as e(k, v));
+  elsif jsonb_typeof(p) = 'array' then
+    return (select coalesce(jsonb_agg(public._redact(x) order by i), '[]'::jsonb) from jsonb_array_elements(p) with ordinality as a(x, i));
+  end if;
+  return p;
+end $$;
 
 create or replace function public.write_audit(
   p_action text, p_table text, p_entity_id text, p_driver uuid, p_before jsonb, p_after jsonb, p_reason text default null

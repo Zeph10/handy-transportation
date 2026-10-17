@@ -153,7 +153,8 @@ export function AuthCallbackPage() {
 }
 
 export function PendingPage() {
-  const { profile, signOut, refresh } = useSession();
+  const { profile, signOut, refresh, isApproved } = useSession();
+  if (isApproved) return <Navigate to="/" replace />;
   const status = profile?.status ?? 'PENDING_APPROVAL';
   const text = {
     PENDING_APPROVAL: { title: 'Waiting for approval', body: 'Thanks for signing up. The dispatcher will review your account. You will be able to log in and share your availability once it is approved.' },

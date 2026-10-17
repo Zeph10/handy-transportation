@@ -43,7 +43,7 @@ export function CalendarToolbar({ nav }: { nav: ReturnType<typeof useCalendarNav
       </div>
       <h2 className="min-w-40 text-base font-semibold" aria-live="polite">{label}</h2>
       <label className="sr-only" htmlFor="cal-date">Go to date</label>
-      <Input id="cal-date" type="date" className="h-8 w-40 text-sm" value={nav.date} onChange={(e) => e.target.value && nav.setDate(e.target.value)} />
+      <div className="w-40"><Input id="cal-date" type="date" className="h-8 text-sm" value={nav.date} onChange={(e) => e.target.value && nav.setDate(e.target.value)} /></div>
       <div className="ml-auto inline-flex overflow-hidden rounded-lg border border-[var(--border)]" role="group" aria-label="View">
         {(['day', 'week'] as const).map((v) => (
           <button key={v} type="button" aria-pressed={nav.view === v} onClick={() => nav.setView(v)}
@@ -107,6 +107,7 @@ export function CalendarView({ nav, events, onSelect, onEventClick, selectable =
         eventOverlap
         slotEventOverlap={false}
         dayHeaderFormat={{ weekday: 'short', month: 'numeric', day: 'numeric' }}
+        eventTimeFormat={{ hour: 'numeric', minute: '2-digit', meridiem: 'short' }}
         select={(arg: DateSelectArg) => {
           ref.current?.getApi().unselect();
           if (!arg.allDay) onSelect?.(arg.start.getTime(), arg.end.getTime());
