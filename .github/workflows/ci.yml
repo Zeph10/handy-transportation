@@ -18,8 +18,8 @@ jobs:
         with:
           node-version: 22
 
-      - name: Core unit tests (scheduling, matching, parsing, money)
-        run: node --test core/test/*.test.ts
+      - name: Unit tests (scheduling, matching, parsing, money, exports)
+        run: node --test core/test/*.test.ts apps/web/test/*.test.ts
 
       - name: Type-check core and Edge Functions
         run: |

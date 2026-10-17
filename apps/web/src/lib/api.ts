@@ -230,7 +230,10 @@ export async function clearReservationCorrection(reservationId: string): Promise
 export async function listOverrides(reservationId: string): Promise<{ id: string; driver_id: string; reason: string; created_by: string; created_at: string }[]> {
   return unwrap(await supabase.from('eligibility_overrides').select('id, driver_id, reason, created_by, created_at').eq('reservation_id', reservationId).is('revoked_at', null)) as never;
 }
-export const setOverride = (reservationId: string, driverId: string, reason: string) =>
+export async function listActiveOverrides(): Promise<{ id: string; reservation_id: string; driver_id: string; reason: string; created_by: string; created_at: string }[]> {
+  return unwrap(await supabase.from('eligibility_overrides').select('id, reservation_id, driver_id, reason, created_by, created_at').is('revoked_at', null).limit(5000)) as never;
+}
+export const setOverride =(reservationId: string, driverId: string, reason: string) =>
   rpc<string>('set_eligibility_override', { p_reservation: reservationId, p_driver: driverId, p_reason: reason });
 export const revokeOverride = (id: string) => rpc<void>('revoke_eligibility_override', { p_override_id: id });
 

@@ -30,7 +30,7 @@ export function RatesPage() {
 
   const save = async () => {
     setError(null);
-    const items = [];
+    const items: { destination_id: string; accepted: boolean; min_rate_cents: number | null }[] = [];
     for (const d of ref.destinations) {
       const r = rows[d.id];
       if (!r) continue;
