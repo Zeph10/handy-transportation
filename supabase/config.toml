@@ -66,6 +66,18 @@ secret = "env(TURNSTILE_SECRET_KEY)"
 enabled = true
 policy = "per_worker"
 
+# Every function checks the caller itself (admin session via /auth/v1/user,
+# cron shared secret, or OAuth state), so gateway JWT checks are off. This also
+# keeps them working with Supabase's newer asymmetric JWT signing keys.
+[functions.google-oauth-start]
+verify_jwt = false
+
+[functions.google-calendars]
+verify_jwt = false
+
+[functions.calendar-sync]
+verify_jwt = false
+
 # Google redirects here without a Supabase session.
 [functions.google-oauth-callback]
 verify_jwt = false

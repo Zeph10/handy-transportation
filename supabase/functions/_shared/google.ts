@@ -1,5 +1,5 @@
 // Google OAuth 2.0 + Calendar API (read-only). Plain fetch, no SDK.
-import { AppError, env } from './http.ts';
+import { AppError, env, supabaseUrl } from './http.ts';
 
 /** Narrowest scopes that work: read events, and list calendars so the admin can pick one. */
 export const GOOGLE_SCOPES = [
@@ -13,7 +13,7 @@ const FORBIDDEN_SCOPES = [
 ];
 
 export function redirectUri(): string {
-  return `${env('SUPABASE_URL')}/functions/v1/google-oauth-callback`;
+  return `${supabaseUrl()}/functions/v1/google-oauth-callback`;
 }
 
 export function authorizationUrl(state: string, codeChallenge: string): string {

@@ -7,6 +7,56 @@ export function env(name: string, required = true): string {
   return v ?? '';
 }
 
+/** First value of a Supabase JSON key map env var such as SUPABASE_SECRET_KEYS ({"default":"sb_secret_…"}). */
+function firstKeyFromJson(name: string): string {
+  const raw = Deno.env.get(name);
+  if (!raw) return '';
+  try {
+    const obj = JSON.parse(raw) as Record<string, string>;
+    return obj.default ?? Object.values(obj)[0] ?? '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Project URL. Supabase injects SUPABASE_URL; as a fallback it is derived from
+ * SUPABASE_DB_URL (db.<ref>.supabase.co or postgres.<ref>@…pooler).
+ */
+export function supabaseUrl(): string {
+  const direct = Deno.env.get('SUPABASE_URL');
+  if (direct) return direct.replace(/\/$/, '');
+  const db = Deno.env.get('SUPABASE_DB_URL') ?? '';
+  const m = /@db\.([a-z0-9]{20})\.supabase\.co/.exec(db) ?? /\/\/postgres\.([a-z0-9]{20})[:@]/.exec(db);
+  if (m) return `https://${m[1]}.supabase.co`;
+  throw new Error('Missing environment variable SUPABASE_URL');
+}
+
+/** Server key: legacy service_role JWT, or the newer sb_secret_… key. */
+export function serviceKey(): string {
+  const k = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || firstKeyFromJson('SUPABASE_SECRET_KEYS');
+  if (!k) throw new Error('Missing environment variable SUPABASE_SERVICE_ROLE_KEY / SUPABASE_SECRET_KEYS');
+  return k;
+}
+
+/** Public key: legacy anon JWT, or the newer sb_publishable_… key. */
+export function publicKey(): string {
+  const k = Deno.env.get('SUPABASE_ANON_KEY') || firstKeyFromJson('SUPABASE_PUBLISHABLE_KEYS');
+  if (!k) throw new Error('Missing environment variable SUPABASE_ANON_KEY / SUPABASE_PUBLISHABLE_KEYS');
+  return k;
+}
+
+const isJwt = (k: string) => k.split('.').length === 3;
+
+/**
+ * Headers for calling Supabase APIs as the service role. New sb_secret_ keys
+ * are not JWTs and go in `apikey` only; legacy keys also go in Authorization.
+ */
+export function serviceHeaders(): Record<string, string> {
+  const key = serviceKey();
+  return isJwt(key) ? { apikey: key, Authorization: `Bearer ${key}` } : { apikey: key };
+}
+
 export function corsHeaders(req: Request): Record<string, string> {
   const allowed = env('APP_URL').replace(/\/$/, '');
   const origin = req.headers.get('origin') ?? '';
@@ -45,12 +95,11 @@ function parsePgError(text: string, status: number): AppError {
 
 /** Call a Postgres function. `as` = 'service' uses the service-role key; otherwise the caller's JWT. */
 export async function rpc<T>(name: string, args: Record<string, unknown>, as: 'service' | { jwt: string }): Promise<T> {
-  const url = `${env('SUPABASE_URL')}/rest/v1/rpc/${name}`;
-  const key = as === 'service' ? env('SUPABASE_SERVICE_ROLE_KEY') : env('SUPABASE_ANON_KEY');
-  const bearer = as === 'service' ? key : as.jwt;
+  const url = `${supabaseUrl()}/rest/v1/rpc/${name}`;
+  const auth = as === 'service' ? serviceHeaders() : { apikey: publicKey(), Authorization: `Bearer ${as.jwt}` };
   const res = await fetch(url, {
     method: 'POST',
-    headers: { apikey: key, Authorization: `Bearer ${bearer}`, 'Content-Type': 'application/json' },
+    headers: { ...auth, 'Content-Type': 'application/json' },
     body: JSON.stringify(args),
   });
   const text = await res.text();
@@ -63,8 +112,8 @@ export async function requireAdmin(req: Request): Promise<{ userId: string; jwt:
   const auth = req.headers.get('authorization') ?? '';
   const jwt = auth.replace(/^Bearer\s+/i, '');
   if (!jwt) throw new AppError('AUTH', 'Please sign in.', 401);
-  const res = await fetch(`${env('SUPABASE_URL')}/auth/v1/user`, {
-    headers: { apikey: env('SUPABASE_ANON_KEY'), Authorization: `Bearer ${jwt}` },
+  const res = await fetch(`${supabaseUrl()}/auth/v1/user`, {
+    headers: { apikey: publicKey(), Authorization: `Bearer ${jwt}` },
   });
   if (!res.ok) throw new AppError('AUTH', 'Your session has expired. Sign in again.', 401);
   const user = (await res.json()) as { id?: string };
@@ -99,12 +148,10 @@ export async function sha256Base64url(input: string): Promise<string> {
 
 /** Insert/select rows through PostgREST with the service role (used for oauth_states). */
 export async function serviceRest<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const key = env('SUPABASE_SERVICE_ROLE_KEY');
-  const res = await fetch(`${env('SUPABASE_URL')}/rest/v1/${path}`, {
+  const res = await fetch(`${supabaseUrl()}/rest/v1/${path}`, {
     ...init,
     headers: {
-      apikey: key,
-      Authorization: `Bearer ${key}`,
+      ...serviceHeaders(),
       'Content-Type': 'application/json',
       Prefer: 'return=representation',
       ...(init.headers ?? {}),
