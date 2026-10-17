@@ -149,6 +149,7 @@ The job runs hourly but only sends during the reminder day and hour set in **Adm
 2. GitHub repo → **Settings → Secrets and variables → Actions → New repository secret**:
    - `SUPABASE_DB_URL` = **`SUPABASE_DB_URL`**
    - `BACKUP_AGE_PUBLIC_KEY` = the `age1…` public key
+   Then on the **Variables** tab add `BACKUPS_ENABLED` = `true` (the nightly job stays off until this is set).
 3. **Actions → Nightly database backup → Run workflow** to test it now. Restore steps are in `docs/BACKUP_AND_RESTORE.md`.
 
 ---
