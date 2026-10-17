@@ -1,0 +1,17 @@
+{
+  "name": "handy-transportation",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Driver availability and dispatch-assistance app for Handy Transportation",
+  "type": "module",
+  "engines": { "node": ">=22.6" },
+  "workspaces": ["core", "apps/web"],
+  "scripts": {
+    "test": "npm run test:core && npm run test:db",
+    "test:core": "node --test core/test/*.test.ts",
+    "test:db": "bash supabase/tests/run.sh",
+    "typecheck:core": "tsc -p core/tsconfig.json",
+    "dev": "npm --workspace apps/web run dev",
+    "build": "npm --workspace apps/web run build"
+  }
+}

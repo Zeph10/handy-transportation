@@ -1,0 +1,13 @@
+{
+  "name": "@handy/core",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Dependency-free scheduling, matching, parsing and money logic shared by the web app and Edge Functions",
+  "type": "module",
+  "main": "src/index.ts",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  }
+}

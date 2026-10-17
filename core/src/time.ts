@@ -1,0 +1,218 @@
+/**
+ * Timezone-safe date/time helpers for America/New_York.
+ *
+ * Dependency-free: uses the platform's Intl time zone database (full ICU in
+ * browsers, Node and Deno), so the same file runs everywhere.
+ *
+ * Conventions
+ * - An "instant" is a JS millisecond timestamp (UTC).
+ * - A "local date" is "YYYY-MM-DD"; a "local time" is "HH:mm" (24h) in ZONE.
+ * - Nonexistent local times (spring-forward gap) move forward by the gap
+ *   length: 02:30 on the March transition day becomes 03:30 EDT. This matches
+ *   Postgres's interpretation.
+ * - Ambiguous local times (fall-back overlap) resolve to the FIRST occurrence
+ *   (EDT): 01:30 on the November transition day is 05:30 UTC.
+ */
+
+export const ZONE = 'America/New_York';
+
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
+const DAY = 24 * HOUR;
+
+export type LocalDate = string; // YYYY-MM-DD
+export type LocalTime = string; // HH:mm
+
+const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+const TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
+
+export function isLocalDate(s: unknown): s is LocalDate {
+  if (typeof s !== 'string') return false;
+  const m = DATE_RE.exec(s);
+  if (!m) return false;
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  const t = Date.UTC(y, mo - 1, d);
+  const back = new Date(t);
+  return back.getUTCFullYear() === y && back.getUTCMonth() === mo - 1 && back.getUTCDate() === d;
+}
+
+export function isLocalTime(s: unknown): s is LocalTime {
+  return typeof s === 'string' && TIME_RE.test(s);
+}
+
+const partsFormatter = new Intl.DateTimeFormat('en-US', {
+  timeZone: ZONE,
+  hourCycle: 'h23',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  weekday: 'short',
+});
+
+export interface ZonedParts {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  second: number;
+  /** ISO weekday: 1 = Monday ... 7 = Sunday */
+  weekday: number;
+}
+
+const WEEKDAYS: Record<string, number> = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7 };
+
+export function zonedParts(instant: number): ZonedParts {
+  const out: Record<string, string> = {};
+  for (const p of partsFormatter.formatToParts(new Date(instant))) out[p.type] = p.value;
+  return {
+    year: Number(out.year),
+    month: Number(out.month),
+    day: Number(out.day),
+    hour: Number(out.hour) % 24,
+    minute: Number(out.minute),
+    second: Number(out.second),
+    weekday: WEEKDAYS[out.weekday] ?? 0,
+  };
+}
+
+/** Offset of ZONE from UTC at the given instant, in minutes (EDT = -240, EST = -300). */
+export function zoneOffsetMinutes(instant: number): number {
+  const p = zonedParts(instant);
+  const asUtc = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second);
+  const floored = instant - (instant % 1000 + 1000) % 1000;
+  return Math.round((asUtc - floored) / MINUTE);
+}
+
+function parseDate(d: LocalDate): [number, number, number] {
+  if (!isLocalDate(d)) throw new RangeError(`Invalid local date: ${d}`);
+  const m = DATE_RE.exec(d)!;
+  return [Number(m[1]), Number(m[2]), Number(m[3])];
+}
+
+function parseTime(t: LocalTime): [number, number] {
+  if (!isLocalTime(t)) throw new RangeError(`Invalid local time: ${t}`);
+  const m = TIME_RE.exec(t)!;
+  return [Number(m[1]), Number(m[2])];
+}
+
+/** Convert a wall-clock date + time in ZONE to an instant (see module rules for DST). */
+export function localToInstant(date: LocalDate, time: LocalTime): number {
+  const [y, mo, d] = parseDate(date);
+  const [h, mi] = parseTime(time);
+  const naive = Date.UTC(y, mo - 1, d, h, mi); // wall clock read as if UTC
+  // Candidate offsets: whatever the zone uses within a day either side.
+  const offsets = new Set<number>([
+    zoneOffsetMinutes(naive - DAY),
+    zoneOffsetMinutes(naive),
+    zoneOffsetMinutes(naive + DAY),
+  ]);
+  const matches: number[] = [];
+  for (const off of offsets) {
+    const candidate = naive - off * MINUTE;
+    const p = zonedParts(candidate);
+    if (p.year === y && p.month === mo && p.day === d && p.hour === h && p.minute === mi) {
+      matches.push(candidate);
+    }
+  }
+  if (matches.length > 0) return Math.min(...matches); // ambiguous → first occurrence
+  // Gap: interpret with the offset in force BEFORE the transition, which moves
+  // the wall clock forward by the gap length (02:30 → 03:30).
+  const before = zoneOffsetMinutes(naive - DAY);
+  return naive - before * MINUTE;
+}
+
+/** Local date (YYYY-MM-DD) of an instant in ZONE. */
+export function instantToLocalDate(instant: number): LocalDate {
+  const p = zonedParts(instant);
+  return `${p.year}-${pad(p.month)}-${pad(p.day)}`;
+}
+
+/** Local time (HH:mm) of an instant in ZONE. */
+export function instantToLocalTime(instant: number): LocalTime {
+  const p = zonedParts(instant);
+  return `${pad(p.hour)}:${pad(p.minute)}`;
+}
+
+export function pad(n: number): string {
+  return n < 10 ? `0${n}` : String(n);
+}
+
+/** Add whole calendar days to a local date. */
+export function addDays(date: LocalDate, days: number): LocalDate {
+  const [y, mo, d] = parseDate(date);
+  const t = new Date(Date.UTC(y, mo - 1, d + days));
+  return `${t.getUTCFullYear()}-${pad(t.getUTCMonth() + 1)}-${pad(t.getUTCDate())}`;
+}
+
+/** ISO weekday of a local date: 1 = Monday ... 7 = Sunday. */
+export function weekdayOf(date: LocalDate): number {
+  const [y, mo, d] = parseDate(date);
+  const w = new Date(Date.UTC(y, mo - 1, d)).getUTCDay();
+  return w === 0 ? 7 : w;
+}
+
+/** Number of days from a to b (b - a). */
+export function daysBetween(a: LocalDate, b: LocalDate): number {
+  const [y1, m1, d1] = parseDate(a);
+  const [y2, m2, d2] = parseDate(b);
+  return Math.round((Date.UTC(y2, m2 - 1, d2) - Date.UTC(y1, m1 - 1, d1)) / DAY);
+}
+
+/** Monday of the week containing the date. */
+export function startOfWeek(date: LocalDate): LocalDate {
+  return addDays(date, 1 - weekdayOf(date));
+}
+
+/** Start instant of a local day (local midnight). */
+export function startOfLocalDay(date: LocalDate): number {
+  return localToInstant(date, '00:00');
+}
+
+/** Today's local date in ZONE. */
+export function todayLocal(now: number = Date.now()): LocalDate {
+  return instantToLocalDate(now);
+}
+
+export function compareDates(a: LocalDate, b: LocalDate): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/** Each local date from start to end inclusive. */
+export function eachDate(start: LocalDate, end: LocalDate): LocalDate[] {
+  const out: LocalDate[] = [];
+  const n = daysBetween(start, end);
+  for (let i = 0; i <= n; i++) out.push(addDays(start, i));
+  return out;
+}
+
+const timeFmt = new Intl.DateTimeFormat('en-US', { timeZone: ZONE, hour: 'numeric', minute: '2-digit' });
+const dayTimeFmt = new Intl.DateTimeFormat('en-US', {
+  timeZone: ZONE,
+  weekday: 'short',
+  month: 'short',
+  day: 'numeric',
+  hour: 'numeric',
+  minute: '2-digit',
+});
+const dateFmt = new Intl.DateTimeFormat('en-US', { timeZone: ZONE, weekday: 'short', month: 'short', day: 'numeric' });
+
+/** "3:00 PM" */
+export function formatTime(instant: number): string {
+  return timeFmt.format(new Date(instant)).replace(' ', ' ');
+}
+
+/** "Wed, Oct 21, 3:00 PM" */
+export function formatDayTime(instant: number): string {
+  return dayTimeFmt.format(new Date(instant)).replace(' ', ' ');
+}
+
+/** "Wed, Oct 21" for a local date */
+export function formatLocalDate(date: LocalDate): string {
+  return dateFmt.format(new Date(localToInstant(date, '12:00')));
+}
+
+export const MS = { MINUTE, HOUR, DAY } as const;

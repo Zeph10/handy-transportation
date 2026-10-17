@@ -1,0 +1,383 @@
+import { zonedParts } from './time.ts';
+import type { CongestionState } from './types.ts';
+
+/**
+ * Configurable parser for Google Calendar reservation events.
+ *
+ * Defaults are tuned to the format the Handy Transportation booking system
+ * writes (labeled lines such as "Trip: TRP-04327 (confirmed)", "Rate: ...",
+ * "Driver: Name · phone"). Every rule is data, so an administrator can add or
+ * reorder rules without code changes. Anything not found is null (UNKNOWN);
+ * nothing is guessed.
+ */
+
+export const PARSER_VERSION = 1;
+
+export type EventSource = 'SUMMARY' | 'DESCRIPTION' | 'LOCATION';
+
+export type ParsedField =
+  | 'tripRef'
+  | 'tripStatus'
+  | 'customerName'
+  | 'pickupTimeText'
+  | 'pickupAddress'
+  | 'dropoffAddress'
+  | 'passengers'
+  | 'checkedBags'
+  | 'carryOnBags'
+  | 'flight'
+  | 'rateLabel'
+  | 'driverLine'
+  | 'vehicle'
+  | 'payout';
+
+export interface ParsingRule {
+  field: ParsedField;
+  source: EventSource;
+  /** Regex source; the first capture group is the value. Case-insensitive, multiline. */
+  pattern: string;
+  priority: number;
+  enabled: boolean;
+}
+
+export interface ReservationMarker {
+  source: EventSource;
+  pattern: string;
+}
+
+export interface RateMapping {
+  /** Regex source matched against the Rate line, case-insensitive. First match wins (by priority). */
+  pattern: string;
+  destinationCode: string;
+  /** Congestion state implied by the rate label; null = leave UNKNOWN */
+  congestion: CongestionState | null;
+  priority: number;
+}
+
+export interface DriverDirectoryEntry {
+  driverId: string;
+  fullName: string;
+  email: string | null;
+  aliases: string[];
+}
+
+export interface ParserConfig {
+  markers: ReservationMarker[];
+  rules: ParsingRule[];
+  rates: RateMapping[];
+  drivers: DriverDirectoryEntry[];
+}
+
+export interface CalendarEventLike {
+  id: string;
+  status?: string; // confirmed | tentative | cancelled
+  summary?: string | null;
+  description?: string | null;
+  location?: string | null;
+  start?: { dateTime?: string | null; date?: string | null } | null;
+  end?: { dateTime?: string | null; date?: string | null } | null;
+  attendees?: { email?: string | null; organizer?: boolean | null; self?: boolean | null }[] | null;
+}
+
+export type AssignmentState = 'UNFILLED' | 'ASSIGNED' | 'ASSIGNED_UNKNOWN' | 'NOT_A_RESERVATION';
+
+export type ReviewFlag =
+  | 'MISSING_PICKUP_TIME'
+  | 'MISSING_DESTINATION'
+  | 'MISSING_PASSENGERS'
+  | 'UNRECOGNIZED_RATE'
+  | 'DESTINATION_INFERRED'
+  | 'PICKUP_TIME_MISMATCH'
+  | 'UNKNOWN_DRIVER_NAME'
+  | 'DRIVER_MATCHED_BY_EMAIL'
+  | 'DRIVER_NAME_EMAIL_MISMATCH'
+  | 'DRIVER_INVITED_BUT_NOT_NAMED'
+  | 'TRIP_NOT_CONFIRMED'
+  | 'ALL_DAY_EVENT';
+
+export interface ParsedReservation {
+  parserVersion: number;
+  isReservation: boolean;
+  tripRef: string | null;
+  tripStatus: string | null;
+  customerName: string | null;
+  pickupAt: number | null;
+  eventEndAt: number | null;
+  pickupAddress: string | null;
+  dropoffAddress: string | null;
+  passengers: number | null;
+  checkedBags: number | null;
+  carryOnBags: number | null;
+  flight: string | null;
+  rateLabel: string | null;
+  destinationCode: string | null;
+  congestion: CongestionState;
+  payoutCents: number | null;
+  driverName: string | null;
+  assignment: AssignmentState;
+  assignedDriverId: string | null;
+  vehicle: string | null;
+  specialInstructions: string | null;
+  /** Fields a reservation needs for matching that could not be extracted */
+  unknownFields: string[];
+  reviewFlags: ReviewFlag[];
+}
+
+const LINE = (label: string) => `^[ \\t]*${label}:[ \\t]*(.+?)[ \\t]*$`;
+
+export const DEFAULT_MARKERS: ReservationMarker[] = [
+  { source: 'DESCRIPTION', pattern: '^[ \\t]*Trip:[ \\t]*TRP-\\d+' },
+  { source: 'SUMMARY', pattern: '^\\s*HANDY TRANSPORTATION LLC CONFIRMATION' },
+];
+
+export const DEFAULT_RULES: ParsingRule[] = [
+  { field: 'tripRef', source: 'DESCRIPTION', pattern: '^[ \\t]*Trip:[ \\t]*(TRP-\\d+)', priority: 10, enabled: true },
+  { field: 'tripStatus', source: 'DESCRIPTION', pattern: '^[ \\t]*Trip:[ \\t]*TRP-\\d+[ \\t]*\\(([^)]+)\\)', priority: 10, enabled: true },
+  { field: 'customerName', source: 'DESCRIPTION', pattern: LINE('Customer'), priority: 10, enabled: true },
+  { field: 'pickupTimeText', source: 'DESCRIPTION', pattern: LINE('Pickup time'), priority: 10, enabled: true },
+  { field: 'pickupAddress', source: 'DESCRIPTION', pattern: LINE('Pickup'), priority: 10, enabled: true },
+  { field: 'pickupAddress', source: 'SUMMARY', pattern: 'pick up .+? from (.+?), @', priority: 20, enabled: true },
+  { field: 'pickupAddress', source: 'LOCATION', pattern: '^(.+)$', priority: 30, enabled: true },
+  { field: 'dropoffAddress', source: 'DESCRIPTION', pattern: LINE('Drop-off'), priority: 10, enabled: true },
+  { field: 'dropoffAddress', source: 'SUMMARY', pattern: 'heading towards (.+?)\\.\\s*Flight Number', priority: 20, enabled: true },
+  { field: 'passengers', source: 'DESCRIPTION', pattern: '^[ \\t]*Passengers:[ \\t]*(\\d+)', priority: 10, enabled: true },
+  { field: 'passengers', source: 'SUMMARY', pattern: 'Passenger Count:\\s*(\\d+)', priority: 20, enabled: true },
+  { field: 'checkedBags', source: 'DESCRIPTION', pattern: 'Bags:[ \\t]*(\\d+)[ \\t]*checked', priority: 10, enabled: true },
+  { field: 'checkedBags', source: 'SUMMARY', pattern: 'Checked Bags:\\s*(\\d+)', priority: 20, enabled: true },
+  { field: 'carryOnBags', source: 'DESCRIPTION', pattern: '(\\d+)[ \\t]*carry-on', priority: 10, enabled: true },
+  { field: 'carryOnBags', source: 'SUMMARY', pattern: 'Carry On Bags:\\s*(\\d+)', priority: 20, enabled: true },
+  { field: 'flight', source: 'DESCRIPTION', pattern: LINE('Flight'), priority: 10, enabled: true },
+  { field: 'rateLabel', source: 'DESCRIPTION', pattern: LINE('Rate'), priority: 10, enabled: true },
+  { field: 'driverLine', source: 'DESCRIPTION', pattern: LINE('Driver'), priority: 10, enabled: true },
+  { field: 'driverLine', source: 'SUMMARY', pattern: '^[ \\t]*Driver:[ \\t]*(.+?)[ \\t]*$', priority: 20, enabled: true },
+  { field: 'vehicle', source: 'DESCRIPTION', pattern: LINE('Vehicle'), priority: 10, enabled: true },
+  // No payout line exists in the current format; an administrator can add one
+  // (e.g. pattern "^\\s*Driver pay:\\s*\\$?([\\d,.]+)") if the booking system starts writing it.
+];
+
+export const DEFAULT_RATES: RateMapping[] = [
+  { pattern: '^EWR\\b', destinationCode: 'EWR', congestion: null, priority: 10 },
+  { pattern: '^LGA\\b', destinationCode: 'LGA', congestion: null, priority: 10 },
+  { pattern: '^JFK\\b', destinationCode: 'JFK', congestion: null, priority: 10 },
+  { pattern: '^New York City\\b.*\\bCongestion\\b', destinationCode: 'NYC', congestion: 'YES', priority: 5 },
+  { pattern: '^New York City\\b', destinationCode: 'NYC', congestion: null, priority: 10 },
+];
+
+const AIRPORT_HINTS: { code: string; pattern: RegExp }[] = [
+  { code: 'EWR', pattern: /\(EWR\)|\bNewark Liberty\b/i },
+  { code: 'LGA', pattern: /\(LGA\)|\bLaGuardia\b/i },
+  { code: 'JFK', pattern: /\(JFK\)|\bJohn F\.? Kennedy\b/i },
+];
+
+function sourceText(ev: CalendarEventLike, source: EventSource): string {
+  switch (source) {
+    case 'SUMMARY': return ev.summary ?? '';
+    case 'DESCRIPTION': return ev.description ?? '';
+    case 'LOCATION': return ev.location ?? '';
+  }
+}
+
+function safeRegex(pattern: string, flags = 'im'): RegExp | null {
+  try {
+    return new RegExp(pattern, flags);
+  } catch {
+    return null;
+  }
+}
+
+/** Validate a rule pattern before saving it (used by the admin settings screen). */
+export function validatePattern(pattern: string): string | null {
+  if (pattern.length > 500) return 'Pattern is too long (500 characters max).';
+  const re = safeRegex(pattern);
+  if (!re) return 'Pattern is not a valid regular expression.';
+  return null;
+}
+
+function extract(ev: CalendarEventLike, rules: ParsingRule[], field: ParsedField): string | null {
+  const candidates = rules.filter((r) => r.field === field && r.enabled).sort((a, b) => a.priority - b.priority);
+  for (const rule of candidates) {
+    const re = safeRegex(rule.pattern);
+    if (!re) continue;
+    const m = re.exec(sourceText(ev, rule.source));
+    const v = m?.[1]?.trim();
+    if (v) return v;
+  }
+  return null;
+}
+
+function toInt(v: string | null): number | null {
+  if (v === null) return null;
+  const n = Number(v.replace(/[^\d]/g, ''));
+  return Number.isInteger(n) && v.replace(/[^\d]/g, '') !== '' ? n : null;
+}
+
+function toCents(v: string | null): number | null {
+  if (v === null) return null;
+  const s = v.replace(/[$,\s]/g, '');
+  if (!/^\d+(\.\d{1,2})?$/.test(s)) return null;
+  const [w, f = ''] = s.split('.');
+  return Number(w) * 100 + Number((f + '00').slice(0, 2));
+}
+
+export function normalizeName(s: string): string {
+  return s
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9 ]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+const MONTHS: Record<string, number> = {
+  jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
+};
+
+/** Compare "Wed, Oct 21 at 3:00 PM EDT" with the event's start instant. Returns null when unparseable. */
+function pickupTextMatches(text: string, instant: number): boolean | null {
+  const m = /([A-Za-z]{3})[a-z]*\s+(\d{1,2})\s+at\s+(\d{1,2}):(\d{2})\s*(AM|PM)/i.exec(text);
+  if (!m) return null;
+  const month = MONTHS[m[1].toLowerCase()];
+  if (!month) return null;
+  let hour = Number(m[3]) % 12;
+  if (m[5].toUpperCase() === 'PM') hour += 12;
+  const p = zonedParts(instant);
+  return p.month === month && p.day === Number(m[2]) && p.hour === hour && p.minute === Number(m[4]);
+}
+
+function extractSpecialInstructions(description: string): string | null {
+  const parts: string[] = [];
+  for (const m of description.matchAll(/^[ \t]*\*\*[ \t]*(.+?)[ \t]*\*\*[ \t]*$/gm)) parts.push(m[1]);
+  const notes = /^[ \t]*Customer notes:[ \t]*\n([\s\S]*)$/im.exec(description);
+  if (notes) {
+    const body = notes[1].split('\n').map((l) => l.trim()).filter(Boolean).join(' / ');
+    if (body) parts.push(`Customer notes: ${body}`);
+  }
+  return parts.length ? parts.join('\n') : null;
+}
+
+function parseInstant(v: { dateTime?: string | null; date?: string | null } | null | undefined): number | null {
+  if (!v?.dateTime) return null;
+  const t = Date.parse(v.dateTime);
+  return Number.isNaN(t) ? null : t;
+}
+
+export function isReservationEvent(ev: CalendarEventLike, markers: ReservationMarker[]): boolean {
+  return markers.some((mk) => {
+    const re = safeRegex(mk.pattern);
+    return re ? re.test(sourceText(ev, mk.source)) : false;
+  });
+}
+
+export function parseReservation(ev: CalendarEventLike, config: ParserConfig): ParsedReservation {
+  const flags = new Set<ReviewFlag>();
+  const base: ParsedReservation = {
+    parserVersion: PARSER_VERSION,
+    isReservation: false,
+    tripRef: null, tripStatus: null, customerName: null,
+    pickupAt: parseInstant(ev.start), eventEndAt: parseInstant(ev.end),
+    pickupAddress: null, dropoffAddress: null,
+    passengers: null, checkedBags: null, carryOnBags: null,
+    flight: null, rateLabel: null, destinationCode: null, congestion: 'UNKNOWN',
+    payoutCents: null, driverName: null, assignment: 'NOT_A_RESERVATION', assignedDriverId: null,
+    vehicle: null, specialInstructions: null, unknownFields: [], reviewFlags: [],
+  };
+
+  if (!isReservationEvent(ev, config.markers)) return base;
+
+  const r = config.rules;
+  const res: ParsedReservation = { ...base, isReservation: true };
+  res.tripRef = extract(ev, r, 'tripRef');
+  res.tripStatus = extract(ev, r, 'tripStatus')?.toLowerCase() ?? null;
+  res.customerName = extract(ev, r, 'customerName');
+  res.pickupAddress = extract(ev, r, 'pickupAddress');
+  res.dropoffAddress = extract(ev, r, 'dropoffAddress');
+  res.passengers = toInt(extract(ev, r, 'passengers'));
+  res.checkedBags = toInt(extract(ev, r, 'checkedBags'));
+  res.carryOnBags = toInt(extract(ev, r, 'carryOnBags'));
+  const flight = extract(ev, r, 'flight');
+  res.flight = flight && flight.replace(/^Flight:\s*/i, '').trim() ? flight.replace(/^Flight:\s*/i, '').trim() : null;
+  res.rateLabel = extract(ev, r, 'rateLabel');
+  res.vehicle = extract(ev, r, 'vehicle');
+  res.payoutCents = toCents(extract(ev, r, 'payout'));
+  res.specialInstructions = extractSpecialInstructions(ev.description ?? '');
+
+  // Pickup time: the event start is authoritative; the text is a cross-check.
+  if (ev.start?.date && !ev.start?.dateTime) {
+    flags.add('ALL_DAY_EVENT');
+    res.pickupAt = null;
+  }
+  const pickupText = extract(ev, r, 'pickupTimeText');
+  if (res.pickupAt !== null && pickupText) {
+    if (pickupTextMatches(pickupText, res.pickupAt) === false) flags.add('PICKUP_TIME_MISMATCH');
+  }
+
+  // Destination from the rate table, else inferred from airport names.
+  if (res.rateLabel) {
+    const mapping = [...config.rates]
+      .sort((a, b) => a.priority - b.priority)
+      .find((m) => safeRegex(m.pattern, 'i')?.test(res.rateLabel!));
+    if (mapping) {
+      res.destinationCode = mapping.destinationCode;
+      if (mapping.congestion) res.congestion = mapping.congestion;
+    } else {
+      flags.add('UNRECOGNIZED_RATE');
+    }
+  }
+  if (!res.destinationCode) {
+    const hay = `${res.pickupAddress ?? ''} | ${res.dropoffAddress ?? ''}`;
+    const hits = AIRPORT_HINTS.filter((h) => h.pattern.test(hay));
+    if (hits.length === 1) {
+      res.destinationCode = hits[0].code;
+      flags.add('DESTINATION_INFERRED');
+    }
+  }
+
+  // Driver assignment.
+  const driverLine = extract(ev, r, 'driverLine');
+  const attendeeEmails = new Set(
+    (ev.attendees ?? [])
+      .filter((a) => a.email && !a.organizer && !a.self)
+      .map((a) => a.email!.toLowerCase()),
+  );
+  const invitedDrivers = config.drivers.filter((d) => d.email && attendeeEmails.has(d.email.toLowerCase()));
+  if (driverLine) {
+    const name = driverLine.split('·')[0].trim();
+    res.driverName = name || null;
+    const key = normalizeName(name);
+    const byName = config.drivers.filter(
+      (d) => normalizeName(d.fullName) === key || d.aliases.some((a) => normalizeName(a) === key),
+    );
+    if (byName.length === 1) {
+      res.assignment = 'ASSIGNED';
+      res.assignedDriverId = byName[0].driverId;
+      if (invitedDrivers.length > 0 && !invitedDrivers.some((d) => d.driverId === byName[0].driverId)) {
+        flags.add('DRIVER_NAME_EMAIL_MISMATCH');
+      }
+    } else if (invitedDrivers.length === 1) {
+      res.assignment = 'ASSIGNED';
+      res.assignedDriverId = invitedDrivers[0].driverId;
+      flags.add('DRIVER_MATCHED_BY_EMAIL');
+    } else {
+      res.assignment = 'ASSIGNED_UNKNOWN';
+      flags.add('UNKNOWN_DRIVER_NAME');
+    }
+  } else {
+    res.assignment = 'UNFILLED';
+    if (invitedDrivers.length > 0) flags.add('DRIVER_INVITED_BUT_NOT_NAMED');
+  }
+
+  if (res.tripStatus && res.tripStatus !== 'confirmed') flags.add('TRIP_NOT_CONFIRMED');
+
+  if (res.pickupAt === null) { res.unknownFields.push('pickupAt'); flags.add('MISSING_PICKUP_TIME'); }
+  if (!res.destinationCode) { res.unknownFields.push('destination'); flags.add('MISSING_DESTINATION'); }
+  if (res.passengers === null) { res.unknownFields.push('passengers'); flags.add('MISSING_PASSENGERS'); }
+  if (res.payoutCents === null) res.unknownFields.push('payout');
+
+  res.reviewFlags = [...flags];
+  return res;
+}
+
+export function defaultParserConfig(drivers: DriverDirectoryEntry[] = []): ParserConfig {
+  return { markers: DEFAULT_MARKERS, rules: DEFAULT_RULES, rates: DEFAULT_RATES, drivers };
+}

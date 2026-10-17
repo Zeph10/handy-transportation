@@ -1,0 +1,91 @@
+import { addDays, compareDates, eachDate, isLocalDate, isLocalTime, localToInstant, weekdayOf } from './time.ts';
+import type { LocalDate } from './time.ts';
+import type { AvailabilityBlock, RecurringRule, RuleException, RuleOccurrence } from './types.ts';
+
+export interface RuleValidationError {
+  field: string;
+  message: string;
+}
+
+/** Validate a rule's shape. Returns an empty array when valid. */
+export function validateRule(rule: Pick<RecurringRule,
+  'weekdays' | 'localStart' | 'localEnd' | 'endDayOffset' | 'effectiveFrom' | 'effectiveUntil'>): RuleValidationError[] {
+  const errors: RuleValidationError[] = [];
+  if (!Array.isArray(rule.weekdays) || rule.weekdays.length === 0) {
+    errors.push({ field: 'weekdays', message: 'Pick at least one day.' });
+  } else if (rule.weekdays.some((d) => !Number.isInteger(d) || d < 1 || d > 7)) {
+    errors.push({ field: 'weekdays', message: 'Days must be Monday through Sunday.' });
+  } else if (new Set(rule.weekdays).size !== rule.weekdays.length) {
+    errors.push({ field: 'weekdays', message: 'A day is listed twice.' });
+  }
+  if (!isLocalTime(rule.localStart)) errors.push({ field: 'localStart', message: 'Start time is invalid.' });
+  if (!isLocalTime(rule.localEnd)) errors.push({ field: 'localEnd', message: 'End time is invalid.' });
+  if (rule.endDayOffset !== 0 && rule.endDayOffset !== 1) {
+    errors.push({ field: 'endDayOffset', message: 'End day must be the same day or the next day.' });
+  }
+  if (isLocalTime(rule.localStart) && isLocalTime(rule.localEnd)) {
+    if (rule.endDayOffset === 0 && rule.localEnd <= rule.localStart) {
+      errors.push({ field: 'localEnd', message: 'End time must be after start time (or mark it as ending the next day).' });
+    }
+    if (rule.endDayOffset === 1 && rule.localEnd > rule.localStart) {
+      errors.push({ field: 'localEnd', message: 'An overnight shift cannot be longer than 24 hours.' });
+    }
+  }
+  if (!isLocalDate(rule.effectiveFrom)) errors.push({ field: 'effectiveFrom', message: 'Start date is invalid.' });
+  if (rule.effectiveUntil !== null) {
+    if (!isLocalDate(rule.effectiveUntil)) errors.push({ field: 'effectiveUntil', message: 'End date is invalid.' });
+    else if (isLocalDate(rule.effectiveFrom) && rule.effectiveUntil < rule.effectiveFrom) {
+      errors.push({ field: 'effectiveUntil', message: 'End date is before start date.' });
+    }
+  }
+  return errors;
+}
+
+/**
+ * Expand recurring rules into concrete occurrences overlapping the local date
+ * range [from, to] (inclusive). Occurrences starting the day before `from`
+ * are included when they run past midnight into the range.
+ *
+ * Skipped occurrences (exceptions) and occurrences replaced by a modified
+ * date-specific block are omitted entirely.
+ */
+export function expandRules(
+  rules: RecurringRule[],
+  from: LocalDate,
+  to: LocalDate,
+  exceptions: RuleException[] = [],
+  blocks: Pick<AvailabilityBlock, 'ruleId' | 'occurrenceDate'>[] = [],
+): RuleOccurrence[] {
+  const skipped = new Set(exceptions.map((e) => `${e.ruleId}|${e.occurrenceDate}`));
+  for (const b of blocks) {
+    if (b.ruleId && b.occurrenceDate) skipped.add(`${b.ruleId}|${b.occurrenceDate}`);
+  }
+  const out: RuleOccurrence[] = [];
+  const scanFrom = addDays(from, -1);
+  for (const rule of rules) {
+    if (validateRule(rule).length > 0) continue;
+    const start = compareDates(rule.effectiveFrom, scanFrom) > 0 ? rule.effectiveFrom : scanFrom;
+    const end = rule.effectiveUntil && compareDates(rule.effectiveUntil, to) < 0 ? rule.effectiveUntil : to;
+    if (compareDates(start, end) > 0) continue;
+    const days = new Set(rule.weekdays);
+    for (const date of eachDate(start, end)) {
+      if (!days.has(weekdayOf(date))) continue;
+      if (skipped.has(`${rule.id}|${date}`)) continue;
+      const s = localToInstant(date, rule.localStart);
+      const e = localToInstant(addDays(date, rule.endDayOffset), rule.localEnd);
+      if (e <= s) continue;
+      // Drop the day-before scan occurrence unless it reaches into the range.
+      if (date === scanFrom && e <= localToInstant(from, '00:00')) continue;
+      out.push({
+        ruleId: rule.id,
+        occurrenceDate: date,
+        start: s,
+        end: e,
+        status: rule.status,
+        vehicleId: rule.vehicleId,
+        destinations: rule.destinations,
+      });
+    }
+  }
+  return out.sort((a, b) => a.start - b.start || a.ruleId.localeCompare(b.ruleId));
+}
