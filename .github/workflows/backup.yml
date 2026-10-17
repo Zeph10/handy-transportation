@@ -1,0 +1,59 @@
+name: Nightly database backup
+
+# The Supabase Free plan has no automatic backups. This job dumps the
+# production database every night, encrypts it with the owner's public age
+# key, and keeps it as a private workflow artifact for 30 days.
+# Restore steps: docs/BACKUP_AND_RESTORE.md
+
+on:
+  schedule:
+    - cron: '17 7 * * *' # 07:17 UTC ≈ 2–3 AM New York
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Install age
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq age
+
+      - name: Dump roles, schema and data
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          set -euo pipefail
+          test -n "$SUPABASE_DB_URL" || { echo "SUPABASE_DB_URL secret is not set"; exit 1; }
+          mkdir -p backup
+          supabase db dump --db-url "$SUPABASE_DB_URL" -f backup/roles.sql --role-only
+          supabase db dump --db-url "$SUPABASE_DB_URL" -f backup/schema.sql
+          supabase db dump --db-url "$SUPABASE_DB_URL" -f backup/data.sql --use-copy --data-only
+          date -u +%Y-%m-%dT%H:%M:%SZ > backup/CREATED_AT
+          # Sanity check: the data dump must contain the core tables.
+          grep -q 'COPY "public"."driver_profiles"' backup/data.sql
+          grep -q 'COPY "public"."availability_blocks"' backup/data.sql
+
+      - name: Encrypt
+        env:
+          BACKUP_AGE_PUBLIC_KEY: ${{ secrets.BACKUP_AGE_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$BACKUP_AGE_PUBLIC_KEY" || { echo "BACKUP_AGE_PUBLIC_KEY secret is not set"; exit 1; }
+          name="handy-backup-$(date -u +%Y%m%d-%H%M%S)"
+          tar -czf - -C backup . | age -r "$BACKUP_AGE_PUBLIC_KEY" -o "$name.tar.gz.age"
+          rm -rf backup
+          echo "BACKUP_FILE=$name.tar.gz.age" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BACKUP_FILE }}
+          path: ${{ env.BACKUP_FILE }}
+          retention-days: 30
+          if-no-files-found: error

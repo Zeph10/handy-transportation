@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Core unit tests (scheduling, matching, parsing, money)
+        run: node --test core/test/*.test.ts
+
+      - name: Type-check core and Edge Functions
+        run: |
+          npm install --global typescript@5
+          tsc -p core/tsconfig.json
+          tsc -p supabase/functions/tsconfig.json
+
+      - name: Edge Function copy of core is current
+        run: node scripts/sync-core.mjs --check
+
+      - name: Database tests (migrations, RLS, RPCs, sync)
+        run: bash supabase/tests/run.sh
+
+      - name: Backup → restore round trip
+        run: bash scripts/test-backup-restore.sh
+
+      - name: Web app build and tests
+        if: hashFiles('apps/web/package.json') != ''
+        run: |
+          npm ci
+          npm --workspace apps/web run typecheck
+          npm --workspace apps/web run test --if-present
+          npm --workspace apps/web run build
+        env:
+          VITE_SUPABASE_URL: https://example.supabase.co
+          VITE_SUPABASE_ANON_KEY: ci-placeholder

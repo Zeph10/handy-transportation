@@ -7,3 +7,4 @@ export * from './parser.ts';
 export * from './matching.ts';
 export * from './validation.ts';
 export * from './shortcuts.ts';
+export * from './sync.ts';
